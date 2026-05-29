@@ -8,8 +8,10 @@ import os
 import time
 import random
 import threading
-#from rich.console import Console
-
+from rich.console import Console
+from openpyxl import load_workbook
+import xlrd
+"""
 class Console:
     def ANSIcolor(self, color="#000000"):
         if color.startswith("#") and len(color) == 7:
@@ -25,6 +27,7 @@ class Console:
         ANSIcolor = self.ANSIcolor(style)
         ANSICode = f"{ANSIcolor}{text}{end}\033[0m"
         print(ANSICode, end="")
+"""
 
 CONSOLE = Console()
 
@@ -568,6 +571,9 @@ class FileEditor:
         self.addrange = ttk.Button(self.editor, text="添加序列", command=self.ImportRange)
         self.addrange.place(x=310, y=280, width=80)
 
+        self.importExcelButton = ttk.Button(self.editor, text="导入Excel", command=self.ImportExcel)
+        self.importExcelButton.place(x=310, y=240, width=100)
+
     def ImportRange(self):
         startnum = simpledialog.askinteger("添加序列", "请输入起始编号：", parent=self.editor)
         endnum = simpledialog.askinteger("添加序列", "请输入结束编号：", parent=self.editor)
@@ -585,6 +591,358 @@ class FileEditor:
             self.names.append(name)
 
         self.RefreshNames()
+
+    def ImportExcel(self):
+        path = filedialog.askopenfilename(
+            title="选择 Excel 文件",
+            filetypes=[("Excel 文件", "*.xlsx *.xls"), ("所有文件", "*")]
+        )
+        if not path:
+            return
+        try:
+            workbook = self._open_excel_workbook(path)
+            sheet_names = []
+            if hasattr(workbook, "sheetnames"):
+                sheet_names = list(workbook.sheetnames)
+            elif hasattr(workbook, "sheet_names"):
+                sheet_names = list(workbook.sheet_names())
+            if not sheet_names:
+                raise ValueError("Excel 文件中未找到工作表。")
+            sheet_name = self._choose_excel_sheet(sheet_names)
+            if not sheet_name:
+                return
+            selected_values = self._show_excel_sheet_selector(workbook, sheet_name, path)
+            if hasattr(workbook, "close"):
+                try:
+                    workbook.close()
+                except Exception:
+                    pass
+            if not selected_values:
+                messagebox.showwarning("提示", "未选择任何单元格。")
+                return
+            imported_names = self.parent.NormalizeNames(selected_values)
+            if not imported_names:
+                messagebox.showwarning("提示", "所选单元格中没有有效姓名数据。")
+                return
+            added_count = 0
+            for name in imported_names:
+                if name not in self.names:
+                    self.names.append(name)
+                    added_count += 1
+            self.RefreshNames()
+            messagebox.showinfo(
+                "导入成功",
+                f"已导入 {len(imported_names)} 条数据，新增 {added_count} 条。"
+            )
+        except Exception as e:
+            CONSOLE.print(f"[!] Failed to import Excel: {e}", style="#bb0000")
+            messagebox.showerror("错误", f"导入 Excel 失败：{e}")
+
+    def _show_excel_sheet_selector(self, workbook, sheet_name, path):
+        sheet_values = self._extract_sheet_values(workbook, sheet_name, path)
+        if not sheet_values:
+            raise ValueError("工作表中未找到任何数据。")
+
+        max_rows = min(len(sheet_values), 100)
+        max_cols = min(max((len(row) for row in sheet_values), default=0), 20)
+        display_rows = sheet_values[:max_rows]
+
+        selector = tk.Toplevel(self.editor)
+        selector.title(f"选择单元格 - {sheet_name}")
+        selector.resizable(False, False)
+        selector.geometry("900x800")
+        selector.transient(self.editor)
+        selector.grab_set()
+
+        tk.Label(selector, text=f"工作表：{sheet_name}，已显示前 {max_rows} 行、{max_cols} 列。双击单元格以选择，按住 Shift 双击两个角点可选中区域，或输入范围如 A1:D6 批量添加。", font=(self.parent.font, 11)).pack(pady=8)
+
+        table_frame = tk.Frame(selector)
+        table_frame.pack(fill="both", expand=True, padx=8)
+
+        cols = [self._col_letter(i + 1) for i in range(max_cols)]
+        tree = ttk.Treeview(table_frame, columns=cols, show="headings", height=18)
+        for col in cols:
+            tree.heading(col, text=col)
+            tree.column(col, width=110, anchor="w")
+
+        for row_index, row in enumerate(display_rows, start=1):
+            values = [self._format_excel_value(row[col_index]) if col_index < len(row) else "" for col_index in range(max_cols)]
+            tree.insert("", "end", iid=str(row_index), values=values)
+
+        vscroll = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
+        hscroll = ttk.Scrollbar(table_frame, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=vscroll.set, xscrollcommand=hscroll.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        vscroll.grid(row=0, column=1, sticky="ns")
+        hscroll.grid(row=1, column=0, sticky="ew")
+        table_frame.grid_rowconfigure(0, weight=1)
+        table_frame.grid_columnconfigure(0, weight=1)
+
+        range_frame = tk.Frame(selector)
+        range_frame.pack(fill="x", padx=8, pady=4)
+        tk.Label(range_frame, text="范围地址：", font=(self.parent.font, 11)).grid(row=0, column=0, sticky="w")
+        start_entry = ttk.Entry(range_frame, width=12)
+        start_entry.grid(row=0, column=1, padx=4)
+        tk.Label(range_frame, text="-", font=(self.parent.font, 11)).grid(row=0, column=2)
+        end_entry = ttk.Entry(range_frame, width=12)
+        end_entry.grid(row=0, column=3, padx=4)
+        ttk.Button(range_frame, text="添加范围", command=lambda: add_range_selection()).grid(row=0, column=4, padx=12)
+        tk.Label(range_frame, text="示例: A1 D5 或 A1:D5", font=(self.parent.font, 9)).grid(row=1, column=0, columnspan=5, sticky="w", pady=4)
+        shift_status_label = tk.Label(range_frame, text="按住 Shift 双击两个角点选择区域。", font=(self.parent.font, 9), fg="#333333")
+        shift_status_label.grid(row=2, column=0, columnspan=5, sticky="w", pady=2)
+
+        selection_frame = tk.Frame(selector)
+        selection_frame.pack(fill="x", padx=8, pady=8)
+
+        tk.Label(selection_frame, text="已选单元格：", font=(self.parent.font, 11)).pack(anchor="w")
+        selected_listbox = tk.Listbox(selection_frame, height=5)
+        selected_listbox.pack(fill="x", padx=4, pady=4)
+
+        selected_values = []
+        selected_set = set()
+        shift_anchor = None
+
+        def add_cell_selection(event=None):
+            nonlocal shift_anchor
+            row_id = tree.identify_row(event.y) if event else None
+            col_id = tree.identify_column(event.x) if event else None
+            if not row_id or not col_id:
+                return
+            col_index = int(col_id.replace("#", "")) - 1
+            row_index = int(row_id) - 1
+            if row_index >= len(display_rows) or col_index >= len(display_rows[row_index]):
+                return
+            address = f"{self._col_letter(col_index + 1)}{row_index + 1}"
+            is_shift = event and (event.state & 0x0001 != 0)
+            if is_shift:
+                if shift_anchor is None:
+                    shift_anchor = (row_index, col_index)
+                    shift_status_label.config(text=f"Shift 锚点已设为 {address}，再按住 Shift 双击第二个角点。")
+                    return
+                add_range_by_coords(shift_anchor[0], shift_anchor[1], row_index, col_index)
+                shift_anchor = None
+                shift_status_label.config(text="按住 Shift 双击两个角点选择区域。")
+                return
+            value = display_rows[row_index][col_index]
+            text = self._format_excel_value(value)
+            if not text:
+                return
+            add_selection_item(address, text)
+
+        def add_selection_item(address, text):
+            item = f"{address}: {text}"
+            if item in selected_set:
+                return
+            selected_set.add(item)
+            selected_values.append(text)
+            selected_listbox.insert(tk.END, item)
+
+        def add_range_by_coords(r1, c1, r2, c2):
+            if r1 > r2:
+                r1, r2 = r2, r1
+            if c1 > c2:
+                c1, c2 = c2, c1
+            for row_index in range(r1, r2 + 1):
+                if row_index < 0 or row_index >= len(display_rows):
+                    continue
+                for col_index in range(c1, c2 + 1):
+                    if col_index < 0 or col_index >= max_cols:
+                        continue
+                    value = display_rows[row_index][col_index]
+                    text = self._format_excel_value(value)
+                    if not text:
+                        continue
+                    address = f"{self._col_letter(col_index + 1)}{row_index + 1}"
+                    add_selection_item(address, text)
+
+        def parse_cell_address(address_text):
+            address_text = address_text.strip().upper().replace(" ", "")
+            if not address_text:
+                return None
+            if ":" in address_text:
+                return None
+            letters = ''.join(ch for ch in address_text if ch.isalpha())
+            digits = ''.join(ch for ch in address_text if ch.isdigit())
+            if not letters or not digits:
+                return None
+            col = 0
+            for ch in letters:
+                col = col * 26 + (ord(ch) - 64)
+            row = int(digits)
+            return (row - 1, col - 1)
+
+        def parse_range_text(text_start, text_end):
+            text_start = text_start.strip().upper().replace(" ", "")
+            text_end = text_end.strip().upper().replace(" ", "")
+            if not text_start or not text_end:
+                return None
+            if ":" in text_start and ":" not in text_end:
+                parts = text_start.split(":")
+                if len(parts) == 2:
+                    text_start, text_end = parts[0], parts[1]
+            start = parse_cell_address(text_start)
+            end = parse_cell_address(text_end)
+            if not start or not end:
+                return None
+            r1, c1 = start
+            r2, c2 = end
+            return (min(r1, r2), min(c1, c2), max(r1, r2), max(c1, c2))
+
+        def add_range_selection():
+            range_text = start_entry.get().strip()
+            end_text = end_entry.get().strip()
+            range_coords = parse_range_text(range_text, end_text)
+            if not range_coords:
+                messagebox.showwarning("提示", "请输入有效的单元格范围，例如 A1:D5 或 A1 D5。", parent=selector)
+                return
+            r1, c1, r2, c2 = range_coords
+            for row_index in range(r1, r2 + 1):
+                if row_index < 0 or row_index >= len(display_rows):
+                    continue
+                for col_index in range(c1, c2 + 1):
+                    if col_index < 0 or col_index >= max_cols:
+                        continue
+                    value = display_rows[row_index][col_index]
+                    text = self._format_excel_value(value)
+                    if not text:
+                        continue
+                    address = f"{self._col_letter(col_index + 1)}{row_index + 1}"
+                    add_selection_item(address, text)
+
+        def remove_selection():
+            selection = selected_listbox.curselection()
+            if not selection:
+                return
+            for index in reversed(selection):
+                item = selected_listbox.get(index)
+                selected_listbox.delete(index)
+                selected_set.discard(item)
+                value = item.split(": ", 1)[1]
+                selected_values.remove(value)
+
+        tree.bind("<Double-1>", add_cell_selection)
+
+        buttons_frame = tk.Frame(selector)
+        buttons_frame.pack(pady=6)
+        ttk.Button(buttons_frame, text="移除选中", command=remove_selection).pack(side="left", padx=6)
+
+        result = {"values": None}
+
+        def confirm():
+            result["values"] = selected_values.copy()
+            selector.destroy()
+
+        def cancel():
+            selector.destroy()
+
+        ttk.Button(buttons_frame, text="导入所选单元格", command=confirm).pack(side="left", padx=6)
+        ttk.Button(buttons_frame, text="取消", command=cancel).pack(side="left", padx=6)
+
+        self.editor.wait_window(selector)
+        return result["values"]
+
+    def _extract_sheet_values(self, workbook, sheet_name, path):
+        values = []
+        if path.lower().endswith(".xlsx"):
+            worksheet = workbook[sheet_name]
+            for row in worksheet.iter_rows(values_only=True):
+                values.append(list(row))
+        else:
+            sheet = workbook.sheet_by_name(sheet_name)
+            for row_index in range(sheet.nrows):
+                values.append(list(sheet.row_values(row_index)))
+        return values
+
+    def _format_excel_value(self, value):
+        if value is None:
+            return ""
+        if isinstance(value, float) and value.is_integer():
+            return str(int(value))
+        return str(value).strip()
+
+    def _col_letter(self, col_index):
+        letters = ""
+        while col_index > 0:
+            col_index, remainder = divmod(col_index - 1, 26)
+            letters = chr(65 + remainder) + letters
+        return letters
+
+    def _open_excel_workbook(self, path):
+        ext = os.path.splitext(path)[1].lower()
+        if ext == ".xlsx":
+            return load_workbook(path, read_only=True, data_only=True)
+        if ext == ".xls":
+            return xlrd.open_workbook(path, on_demand=True)
+        raise ValueError("仅支持 XLS/XLSX 格式的 Excel 文件。")
+
+    def _choose_excel_sheet(self, sheet_names):
+        if not sheet_names:
+            return None
+        if len(sheet_names) == 1:
+            return sheet_names[0]
+
+        picker = tk.Toplevel(self.editor)
+        picker.title("选择工作表")
+        picker.resizable(False, False)
+        picker.geometry("320x260")
+        picker.transient(self.editor)
+        picker.grab_set()
+
+        label = tk.Label(picker, text="请选择要导入的工作表：", font=(self.parent.font, 11))
+        label.pack(pady=12)
+
+        listbox = tk.Listbox(picker, height=8, width=38)
+        listbox.pack(padx=12)
+        for name in sheet_names:
+            listbox.insert(tk.END, name)
+
+        result = {"sheet": None}
+
+        def choose():
+            selection = listbox.curselection()
+            if not selection:
+                messagebox.showwarning("提示", "请先选择一个工作表。", parent=picker)
+                return
+            result["sheet"] = listbox.get(selection[0])
+            picker.destroy()
+
+        def cancel():
+            picker.destroy()
+
+        button_frame = tk.Frame(picker)
+        button_frame.pack(pady=12)
+        ttk.Button(button_frame, text="确定", command=choose).pack(side="left", padx=8)
+        ttk.Button(button_frame, text="取消", command=cancel).pack(side="left", padx=8)
+        listbox.bind("<Double-Button-1>", lambda event: choose())
+
+        self.editor.wait_window(picker)
+        return result["sheet"]
+
+    def _read_excel_sheet(self, workbook, sheet_name, path):
+        names = []
+        if path.lower().endswith(".xlsx"):
+            worksheet = workbook[sheet_name]
+            for row in worksheet.iter_rows(values_only=True):
+                value = self._first_nonempty_cell(row)
+                if value is not None:
+                    names.append(str(value).strip())
+        else:
+            sheet = workbook.sheet_by_name(sheet_name)
+            for row_index in range(sheet.nrows):
+                row = sheet.row_values(row_index)
+                value = self._first_nonempty_cell(row)
+                if value is not None:
+                    names.append(str(value).strip())
+        return names
+
+    def _first_nonempty_cell(self, row):
+        for cell in row:
+            if cell is None:
+                continue
+            text = str(cell).strip()
+            if text:
+                return text
+        return None
 
     def RefreshNames(self):
         self.nameListbox.delete(0, tk.END)
