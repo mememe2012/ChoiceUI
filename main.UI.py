@@ -11,6 +11,7 @@ import threading
 from rich.console import Console
 from openpyxl import load_workbook
 import xlrd
+import webbrowser as web
 """
 class Console:
     def ANSIcolor(self, color="#000000"):
@@ -84,6 +85,8 @@ class MainUI():
         self.rolling = False
         self.roll_target_count = 1
         self.choice_folder = "assets/choicefile"
+        self.url = "https://github.com/mememe2012/ChoiceUI"
+        self.version = "1.2.0.0"
         os.makedirs(self.choice_folder, exist_ok=True)
 #---------------------Init UI--------------------------#
         self.root = tk.Tk()
@@ -118,7 +121,23 @@ class MainUI():
         self.loadedFileLabel = tk.Label(self.root, text="当前名单：无", font=(self.font, 10), fg="#333")
         self.loadedFileLabel.place(x=420, y=180, anchor="n")
 
+        self.MainMenu = tk.Menu(self.root)
+        self.root.config(menu=self.MainMenu)
+
+        self.codeMenu = tk.Menu(self.MainMenu, tearoff=0)
+        self.codeMenu.add_command(label="源代码", command=self.codeSource)
+        self.codeMenu.add_command(label="关于", command=self.about)
+        self.MainMenu.add_cascade(label="软件信息", menu=self.codeMenu)
+
         self.UpdateCountLimit()
+
+    def codeSource(self):
+        choice = messagebox.askyesno("源代码", "是否打开 Choice UI 的 GitHub 仓库？")
+        if choice:
+            web.open(self.url)
+
+    def about(self):
+        messagebox.showinfo("关于", f"Choice UI v{self.version}\nAuthor: mememe2012\nGitHub: " + self.url + "\nLICENSE: MIT License\n" + open("LICENSE", "r", encoding="utf-8").read())
 
     def showInfo(self):
 
