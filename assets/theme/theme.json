@@ -1,0 +1,46 @@
+{
+    "light": {
+        "name": "Light",
+        "bg": "#f3f4f6",
+        "fg": "#111827",
+        "btn_bg": "#ffffff",
+        "btn_fg": "#111827",
+        "active_bg": "#e5e7eb",
+        "border": "#d1d5db",
+        "entry_bg": "#ffffff",
+        "accent": "#2563eb"
+    },
+    "dark": {
+        "name": "Dark",
+        "bg": "#111827",
+        "fg": "#f8fafc",
+        "btn_bg": "#1f2937",
+        "btn_fg": "#f8fafc",
+        "active_bg": "#374151",
+        "border": "#334155",
+        "entry_bg": "#0f172a",
+        "accent": "#38bdf8"
+    },
+    "modern_light": {
+        "name": "Modern Light",
+        "bg": "#ffffff",
+        "fg": "#0f172a",
+        "btn_bg": "#f8fafc",
+        "btn_fg": "#0f172a",
+        "active_bg": "#e2e8f0",
+        "border": "#cbd5e1",
+        "entry_bg": "#ffffff",
+        "accent": "#2563eb"
+    },
+    "modern_dark": {
+        "name": "Modern Dark",
+        "bg": "#000000",
+        "fg": "#cfcfcf",
+        "btn_bg": "#1e293b",
+        "btn_fg": "#f8fafc",
+        "active_bg": "#334155",
+        "border": "#475569",
+        "entry_bg": "#0b1120",
+        "accent": "#38bdf8"
+    }
+}

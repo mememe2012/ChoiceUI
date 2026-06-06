@@ -1,1 +1,5 @@
-python -m nuitka main.UI.py --standalone --windows-console-mode=disable --windows-icon-from-ico=assets/icon.ico --output-dir=../exe --windows-company-name=mememe2012 --windows-product-name=Choice_UI --windows-file-version=1.2.0.0 --windows-product-version=1.2.0.0 --optimize=2 --plugin-enable=tk-inter --jobs=4 --zig
+@echo off
+cls
+
+python -m nuitka main.UI.py --enable-plugin=upx --upx-binary=--best --standalone --windows-console-mode=disable --windows-icon-from-ico=assets/icon.ico --output-dir=../exe --windows-company-name=mememe2012 --windows-uac-admin --windows-product-name=Choice_UI --windows-file-version=1.2.1.0 --windows-product-version=1.2.1.0 --plugin-enable=tk-inter --jobs=8 --zig
+pause

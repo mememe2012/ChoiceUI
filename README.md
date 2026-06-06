@@ -6,7 +6,7 @@
 
 ## 运行
 
-main.UI.py是抽奖程序的主界面。
+main.UI是抽奖程序的主界面。
 
 ## LICENSE
 
