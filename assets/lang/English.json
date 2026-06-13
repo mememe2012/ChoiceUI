@@ -102,7 +102,7 @@
   "已导入 {count} 条数据，新增 {added} 条。": "Imported {count} entries, {added} new.",
   "导入 Excel 失败": "Import Excel failed",
   "选择单元格 - {sheet}": "Select cells - {sheet}",
-  "工作表：{sheet}，已显示前 {rows} 行、{cols} 列。双击单元格以选择，按住 Shift 双击两个角点可选中区域，或输入范围如 A1:D6 批量添加。": "Worksheet: {sheet}, displaying first {rows} rows and {cols} columns. Double-click a cell to select it, hold Shift and double-click two corners to select a range, or enter a range like A1:D6.",
+  "工作表：{sheet}，已显示前 {rows} 行、{cols} 列。": "Worksheet: {sheet}, displaying first {rows} rows and {cols} columns.",
   "范围地址：": "Range address:",
   "添加范围": "Add range",
   "示例: A1 D5 或 A1:D5": "Example: A1 D5 or A1:D5",
@@ -122,5 +122,8 @@
   "保存名单失败": "Failed to save the list",
   "加载设置失败": "Failed to load settings",
   "保存设置失败": "Failed to save settings",
-  "系统主题:":"System theme: "
+  "系统主题:":"System theme: ",
+  "未能获取最新版本信息。请检查仓库名称是否正确或网络连接。": "Failed to get the latest version information. Please check if the repository name is correct or if there is a network connection.",
+  "取消下载": "Cancel Download",
+  "是否取消当前下载？": "Cancel the current download?"
 }

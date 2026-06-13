@@ -8,7 +8,8 @@
         "active_bg": "#e5e7eb",
         "border": "#d1d5db",
         "entry_bg": "#ffffff",
-        "accent": "#2563eb"
+        "accent": "#2563eb",
+        "progress": "#e5e7eb"
     },
     "dark": {
         "name": "Dark",
@@ -19,7 +20,8 @@
         "active_bg": "#374151",
         "border": "#334155",
         "entry_bg": "#0f172a",
-        "accent": "#38bdf8"
+        "accent": "#38bdf8",
+        "progress": "#334155"
     },
     "modern_light": {
         "name": "Modern Light",
@@ -30,7 +32,8 @@
         "active_bg": "#e2e8f0",
         "border": "#cbd5e1",
         "entry_bg": "#ffffff",
-        "accent": "#2563eb"
+        "accent": "#2563eb",
+        "progress": "#e2e8f0"
     },
     "modern_dark": {
         "name": "Modern Dark",
@@ -41,6 +44,7 @@
         "active_bg": "#334155",
         "border": "#475569",
         "entry_bg": "#0b1120",
-        "accent": "#38bdf8"
+        "accent": "#38bdf8",
+        "progress": "#475569"
     }
 }

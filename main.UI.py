@@ -11,30 +11,22 @@ import os
 import time
 import random
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from rich.console import Console
 from openpyxl import load_workbook
 import xlrd
 import webbrowser as web
 import pyglet
 import winreg
-
-"""
-class Console:
-    def ANSIcolor(self, color="#000000"):
-        if color.startswith("#") and len(color) == 7:
-            r = int(color[1:3], 16)
-            g = int(color[3:5], 16)
-            b = int(color[5:7], 16)
-            return f"\033[38;2;{r};{g};{b}m"
-        return "\033[0m"
-
-    def print(self, *args, sep=" ", end="\n", style="#000000"):
-        args = [str(arg) for arg in args]
-        text = sep.join(args)
-        ANSIcolor = self.ANSIcolor(style)
-        ANSICode = f"{ANSIcolor}{text}{end}\033[0m"
-        print(ANSICode, end="")
-"""
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+import sys
+from typing import Optional, Dict, Any
+import requests as req
+import shutil
+import subprocess
+import sys
 
 CONSOLE = Console()
 reg_path = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
@@ -130,19 +122,15 @@ def _read_font_family_name(fontfile):
         return None
 
 def fontloader(fontpath):
-    # Accept both file path and family name
     if not fontpath:
         return "Microsoft YaHei"
     try:
-        # if it's not a file, assume it's already a family name
         if not os.path.exists(fontpath):
             return fontpath
-        # try to register with pyglet (cross-platform)
         try:
             pyglet.font.add_file(fontpath)
         except Exception:
             pass
-        # On Windows, also register the font for this process so Tk can see it
         try:
             if platform.system() == "Windows":
                 FR_PRIVATE = 0x10
@@ -150,14 +138,59 @@ def fontloader(fontpath):
                 AddFontResourceEx(str(fontpath), FR_PRIVATE, 0)
         except Exception:
             pass
-        # Attempt to read family name from font file
         family = _read_font_family_name(fontpath)
         if family:
             return family
     except Exception as e:
         CONSOLE.print(f"[!] fontloader error: {e}", style="#bb0000")
-    # fallback
+
     return "Microsoft YaHei"
+
+class GitHubReleaseChecker:
+    def __init__(self, owner: str, repo: str):
+        self.owner = owner
+        self.repo = repo
+        self.base_url = f"https://api.github.com/repos/{owner}/{repo}"
+        self.headers = {
+            "Accept": "application/vnd.github.v3+json",
+            "User-Agent": "Python-GitHub-Release-Checker"
+        }
+
+    def get_latest_release(self) -> Optional[Dict[str, Any]]:
+        url = f"{self.base_url}/releases/latest"
+        try:
+            response = requests.get(url, headers=self.headers, timeout=10)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            CONSOLE.print(f"请求失败: {e}", style="#bb0000")
+            return None
+        except json.JSONDecodeError:
+            CONSOLE.print("解析 JSON 响应失败", style="#bb0000")
+            return None
+
+    def get_all_releases(self, per_page: int = 30) -> list:
+        url = f"{self.base_url}/releases"
+        releases = []
+        try:
+            response = requests.get(url, headers=self.headers, params={"per_page": per_page}, timeout=10)
+            response.raise_for_status()
+            releases = response.json()
+        except requests.exceptions.RequestException as e:
+            CONSOLE.print(f"请求失败: {e}", style="#bb0000")
+        return releases
+
+    def parse_version_info(self, release_data: Dict[str, Any]) -> Dict[str, str]:
+        if not release_data:
+            return {}
+        
+        return {
+            "tag_name": release_data.get("tag_name", "Unknown"),
+            "name": release_data.get("name", "Unnamed Release"),
+            "published_at": release_data.get("published_at", "Unknown Date"),
+            "html_url": release_data.get("html_url", ""),
+            "body_preview": release_data.get("body", "")[:200] + "..." if release_data.get("body") else "No description"
+        }
 
 class Explain:
     def __init__(self, parent, text, control, font="Microsoft YaHei", size=12, padx=0, pady=4):
@@ -206,7 +239,7 @@ class MainUI():
         self.font_file = os.path.join(self.font_folder, "MicrosoftYaHei.ttc")
         self.font = fontloader(self.font_file)
         self.url = "https://github.com/mememe2012/ChoiceUI"
-        self.version = "1.2.1.0"
+        self.version = "1.3.1.1"
 
         self.language_file = "English.json"
         self.language_data = {}
@@ -232,9 +265,281 @@ class MainUI():
             self.LoadFile(self.pending_load_file)
 
         self.root.iconbitmap("assets/icon.ico")
+#---------------------File----------------------------#
+        if os.path.exists("setuptmp"):
+            CONSOLE.print("Cleaning up temporary files...", style="#00bb00")
+            shutil.rmtree("setuptmp", ignore_errors=True)
+        try:os.mkdir("setuptmp")
+        except Exception:pass
+        if os.path.exists("setting.json"):
+            shutil.copy("setting.json", "setuptmp/setting.json")
+            os.remove("setting.json")
+#------------------Check UPDATE-----------------------#
+        gcu = threading.Thread(target=lambda: self.checkupdate(self.version))
+        gcu.daemon = True
+        gcu.start()
+#=====================================================#
         self.threadPrograss(self.UIposChanged)
 
         self.root.mainloop()
+
+    def cancel_download(self):
+        if messagebox.askyesno(self.tr("取消下载"), self.tr("是否取消当前下载？")):
+            self.download_cancelled = True
+            if self.rolling:
+                self.rolling = False
+            if self.roll_job:
+                self.root.after_cancel(self.roll_job)
+                self.roll_job = None
+            if hasattr(self, 'progresswindow') and self.progresswindow.winfo_exists():
+                self.progresswindow.destroy()
+
+    def downloadFile(self, url, save_path):
+        self.progresswindow = tk.Toplevel(self.root)
+        self.progresswindow.title(self.tr("下载"))
+        self.progresswindow.resizable(False, False)
+        self.progresswindow.geometry("400x100")
+        self.progresswindow.iconbitmap("assets/icon.ico")
+        self.progresswindow.config(bg=self.themes[self.theme_key]["bg"])
+
+        self.progressbar = ttk.Progressbar(self.progresswindow, style="Green.Horizontal.TProgressbar", mode="determinate", maximum=100, value=0)
+        self.progressbar.place(x=20, y=20, width=360, height=30)
+
+        self.progressLabel = tk.Label(self.progresswindow, text=self.tr("Requesting..."), font=(self.font, 10), bg=self.themes[self.theme_key]["bg"], fg=self.themes[self.theme_key]["fg"])
+        self.progressLabel.place(x=20, y=60)
+
+        self.speedLabel = tk.Label(self.progresswindow, text="0.00 MiB/s", font=(self.font, 10), bg=self.themes[self.theme_key]["bg"], fg=self.themes[self.theme_key]["fg"])
+        self.speedLabel.place(x=20, y=80)
+
+        self.progresswindow.grab_set()
+
+        self.progresswindow.protocol("WM_DELETE_WINDOW", self.cancel_download)
+
+        self.download_cancelled = False
+        start_time = time.time()
+
+        def update_progress_ui(downloaded_bytes: int, total_bytes: Optional[int]):
+            elapsed = max(time.time() - start_time, 0.001)
+            speed = downloaded_bytes / elapsed
+            speed_text = f"{speed / 1024 / 1024:.2f} MiB/s"
+            self.speedLabel.config(text="{speed}".format(speed=speed_text))
+            if total_bytes:
+                percent = min(downloaded_bytes / total_bytes * 100, 100)
+                self.progressLabel.config(text=f"{downloaded_bytes / 1024 / 1024:.2f} MiB/{total_bytes / 1024 / 1024:.2f} MiB {percent:.2f}%")
+                self.progressbar['value'] = percent
+            else:
+                self.progressLabel.config(text=f"{downloaded_bytes / 1024 / 1024:.2f} MiB")
+                self.progressbar['value'] = 0
+
+        def download_segment(index: int, start: int, end: int, total_bytes: int, headers: Dict[str, str], adapter: HTTPAdapter, temp_path: str, downloaded_lock: threading.Lock,  downloaded_state: Dict[str, int]):
+            part_path = f"{temp_path}.part{index}"
+            local_headers = headers.copy()
+            local_headers["Range"] = f"bytes={start}-{end}"
+            with req.Session() as segment_session:
+                segment_session.mount("https://", adapter)
+                segment_session.mount("http://", adapter)
+                with segment_session.get(url, headers=local_headers, stream=True, timeout=(10, 60), allow_redirects=True) as segment_response:
+                    segment_response.raise_for_status()
+                    with open(part_path, "wb") as part_file:
+                        for chunk in segment_response.iter_content(chunk_size=8192):
+                            if self.download_cancelled:
+                                raise RuntimeError("Download cancelled")
+                            if chunk:
+                                part_file.write(chunk)
+                                with downloaded_lock:
+                                    downloaded_state["bytes"] += len(chunk)
+                                    current = downloaded_state["bytes"]
+                                self.root.after(0, update_progress_ui, current, total_bytes)
+            return part_path
+
+        try:
+            session = req.Session()
+            retries = Retry(
+                total=5,
+                backoff_factor=0.6,
+                status_forcelist=(429, 500, 502, 503, 504),
+                allowed_methods=("HEAD", "GET", "OPTIONS")
+            )
+            adapter = HTTPAdapter(max_retries=retries)
+            session.mount("https://", adapter)
+            session.mount("http://", adapter)
+
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+                "Accept": "application/octet-stream"
+            }
+
+            CONSOLE.print(f"正在下载文件: {url}", style="#00bb00")
+            total_length = None
+            accept_ranges = False
+            temp_path = save_path + ".part"
+
+            try:
+                with session.head(url, headers=headers, allow_redirects=True, timeout=(10, 60)) as head_response:
+                    head_response.raise_for_status()
+                    total_length = head_response.headers.get("content-length")
+                    accept_ranges = head_response.headers.get("accept-ranges", "").lower() == "bytes"
+            except requests.exceptions.RequestException:
+                pass
+
+            if total_length is not None:
+                total_length = int(total_length)
+                self.progressLabel.config(text=f"File Size: {total_length / 1024:.2f} KB")
+            else:
+                self.progressLabel.config(text=self.tr("File Size: Unknown"))
+
+            if total_length and accept_ranges:
+                self.progressbar.config(mode="determinate", maximum=100, value=0)
+                max_workers = min(4, (os.cpu_count() or 2) or 1)
+                segment_count = max_workers
+                segment_size = total_length // segment_count
+                downloaded_lock = threading.Lock()
+                downloaded_state = {"bytes": 0}
+                part_paths = []
+                ranges = []
+                for index in range(segment_count):
+                    start = index * segment_size
+                    end = total_length - 1 if index == segment_count - 1 else ((index + 1) * segment_size - 1)
+                    ranges.append((index, start, end))
+
+                with ThreadPoolExecutor(max_workers=segment_count) as executor:
+                    future_to_part = {
+                        executor.submit(download_segment, idx, start, end, total_length, headers, adapter, temp_path, downloaded_lock, downloaded_state): idx
+                        for idx, start, end in ranges
+                    }
+                    for future in as_completed(future_to_part):
+                        if self.download_cancelled:
+                            raise RuntimeError("Download cancelled")
+                        part_paths.append(future.result())
+
+                with open(temp_path, "wb") as output_file:
+                    for index in range(len(part_paths)):
+                        part_path = f"{temp_path}.part{index}"
+                        with open(part_path, "rb") as part_file:
+                            output_file.write(part_file.read())
+                        try:
+                            os.remove(part_path)
+                        except Exception:
+                            pass
+
+            else:
+                with session.get(url, headers=headers, stream=True, timeout=(10, 60), allow_redirects=True) as response:
+                    response.raise_for_status()
+                    total_length = response.headers.get("content-length")
+                    if total_length is not None:
+                        total_length = int(total_length)
+                        self.progressbar.config(mode="determinate", maximum=100, value=0)
+                    else:
+                        self.progressbar.config(mode="indeterminate")
+                        self.progressbar.start(10)
+
+                    downloaded = 0
+                    with open(temp_path, "wb") as f:
+                        for chunk in response.iter_content(chunk_size=8192):
+                            if self.download_cancelled:
+                                raise RuntimeError("Download cancelled")
+                            if chunk:
+                                f.write(chunk)
+                                downloaded += len(chunk)
+                                if total_length:
+                                    percent = min(downloaded / total_length * 100, 100)
+                                    CONSOLE.print(f"下载进度: {percent:.2f}%", style="#00bb00", end="\r")
+                                    self.root.after(0, update_progress_ui, downloaded, total_length)
+                                else:
+                                    self.root.after(0, update_progress_ui, downloaded, None)
+                    if total_length:
+                        self.progressbar['value'] = 100
+
+                self.progressbar.destroy()
+                self.speedLabel.destroy()
+
+                self.textlabel = tk.Label(self.progresswindow, text="Loading...", font=(self.font, 10), bg=self.themes[self.theme_key]["bg"], fg=self.themes[self.theme_key]["fg"])
+                self.textlabel.place(x=20, y=60)
+
+            if self.download_cancelled:
+                raise RuntimeError("Download cancelled")
+            
+            self.progressLabel.config(text="Saveing...")
+
+            os.replace(temp_path, save_path)
+            CONSOLE.print(f"下载完成，已保存到: {save_path}", style="#00bb00")
+            
+            self.loadupdatefile()
+
+        except RuntimeError as e:
+            if str(e) == "Download cancelled":
+                CONSOLE.print("下载已取消。", style="#bb0000")
+            else:
+                CONSOLE.print(f"Error: {e}", style="#bb0000")
+                messagebox.showerror(self.tr("错误"), f"{self.tr('下载文件失败')}: {e}")
+        except requests.exceptions.RequestException as e:
+            CONSOLE.print(f"下载请求失败: {e}", style="#bb0000")
+            messagebox.showerror(self.tr("错误"), f"{self.tr('下载文件失败')}: {e}")
+        except Exception as e:
+            CONSOLE.print(f"Error: {e}", style="#bb0000")
+            messagebox.showerror(self.tr("错误"), f"{self.tr('下载文件失败')}: {e}")
+        finally:
+            if hasattr(self, 'progresswindow') and self.progresswindow.winfo_exists():
+                self.progresswindow.destroy()
+
+    def loadupdatefile(self):
+        try:
+            if os.path.exists("assets/setting.json"):
+                shutil.copy("assets/setting.json", "setting.json")
+            CONSOLE.print("已准备好安装程序。正在启动...", style="#00bb00")
+        except Exception as e:
+            CONSOLE.print(f"Failed to copy setting.json: {e}", style="#bb0000")
+        process = subprocess.Popen(
+            ["setuptmp/setup.exe"], 
+            stdout=subprocess.DEVNULL, 
+            stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
+        )
+        CONSOLE.print("正在启动安装程序...", style="#00bb00")
+        sys.exit(0)
+
+    def checkupdate(self, version):
+        if os.path.exists("setuptmp"):
+            CONSOLE.print("正在清理临时文件...", style="#00bb00")
+            shutil.rmtree("setuptmp", ignore_errors=True)
+        version = "V" + version
+        if len(sys.argv) < 3:
+            owner = "mememe2012"
+            repo = "ChoiceUI"
+        else:
+            owner = sys.argv[1]
+            repo = sys.argv[2]
+
+        CONSOLE.print(f"正在检查 GitHub 仓库: {owner}/{repo} 的最新版本...", style="#00bb00")
+        
+        checker = GitHubReleaseChecker(owner, repo)
+        
+        latest_release = checker.get_latest_release()
+        
+        if latest_release:
+            info = checker.parse_version_info(latest_release)
+            CONSOLE.print("-" * 40, style="#00bb00")
+            CONSOLE.print(f"最新标签 (Tag): {info['tag_name']}", style="#00bb00")
+            CONSOLE.print(f"发布名称:       {info['name']}", style="#00bb00")
+            CONSOLE.print(f"发布时间:       {info['published_at']}", style="#00bb00")
+            CONSOLE.print(f"链接:           {info['html_url']}", style="#00bb00")
+            CONSOLE.print(f"简介预览:       \n{"="*10+"简介"+"="*10}\n{info['body_preview']}", style="#00bb00")
+            CONSOLE.print("-" * 40, style="#00bb00")
+            v1 = "".join(info['tag_name'].lstrip('V').split('.'))
+            v2 = "".join(version.lstrip('V').split('.'))
+            if int(v1) > int(v2):
+                CONSOLE.print(f"检测到新版本！当前版本: {version}，最新版本: {info['tag_name']}", style="#00bb00")
+                if messagebox.askyesno("更新提示", self.tr("检测到新版本！当前版本: {version}\n最新版本: {info}\n下载链接: {url}\n是否升级？").format(version=version, info=info['tag_name'], url=info['html_url'])):
+                    dowloadurl = f"{"/".join(info['html_url'].split('/')[:-3])}/releases/download/{info['tag_name']}/ChoiceUI{info['tag_name'].replace('V', '')}-SETUP.exe"
+                    try:os.mkdir("setuptmp")
+                    except Exception:pass
+                    self.downloadFile(dowloadurl, "setuptmp/setup.exe")
+            else:
+                CONSOLE.print(f"当前版本 {version} 已是最新版本。", style="#00bb00")
+                messagebox.showinfo(self.tr("检查更新"), self.tr("当前版本 {version} 已是最新版本。").format(version=version))
+        else:
+            CONSOLE.print("未能获取最新版本信息。请检查仓库名称是否正确或网络连接。", style="#bb0000")
+            messagebox.showerror("错误",self.tr("未能获取最新版本信息。请检查仓库名称是否正确或网络连接。"))
 
     def Controls(self):
         self.showLabel = tk.Label(self.root, text=self.tr("等待抽取"), font=(self.font, 20))
@@ -268,6 +573,7 @@ class MainUI():
         self.SettingMenu.add_command(label="主题", command=self.theme)
         self.SettingMenu.add_command(label="语言", command=self.lang)
         self.SettingMenu.add_command(label="字体", command=self.font_setting)
+        self.SettingMenu.add_command(label="检查更新", command=lambda: threading.Thread(target=self.checkupdate, args=(self.version,), daemon=True).start())
         self.MainMenu.add_cascade(label="设置", menu=self.SettingMenu)
 
         self.UpdateCountLimit()
@@ -882,8 +1188,58 @@ class MainUI():
         CONSOLE.print(f"[*] Selected font file: {font_path}", style="#00bb00")
         self.UpdateFontPreview(font_path)
 
+    def ResolveTheme(self, theme_key=None):
+        theme_key = theme_key or self.theme_key
+        if theme_key == "system":
+            system_theme = get_system_theme()
+            if system_theme == "Dark":
+                return self.themes.get("dark", self.themes["light"])
+            return self.themes.get("light", self.themes["dark"])
+        return self.themes.get(theme_key, self.themes["light"])
+
+    def _is_dark_theme(self, theme):
+        try:
+            c = theme.get("bg", "#ffffff").lstrip('#')
+            rr = int(c[0:2], 16); gg = int(c[2:4], 16); bb = int(c[4:6], 16)
+            lum = (rr * 299 + gg * 587 + bb * 114) / 1000
+            return lum < 128
+        except Exception:
+            return False
+
+    def set_window_titlebar_color(self, theme):
+        if platform.system() != "Windows":
+            return
+        try:
+            hwnd = self.root.winfo_id()
+            if not hwnd:
+                return
+            DWMWA_CAPTION_COLOR = 35
+            DWMWA_TEXT_COLOR = 36
+            DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+            dwmapi = ctypes.windll.dwmapi
+            is_dark = self._is_dark_theme(theme)
+            dark_value = ctypes.c_int(1 if is_dark else 0)
+            try:
+                dwmapi.DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, ctypes.byref(dark_value), ctypes.sizeof(dark_value))
+            except Exception:
+                pass
+            caption_color = int(theme.get("btn_bg", theme.get("bg", "#ffffff")).lstrip('#'), 16)
+            text_color = int(theme.get("btn_fg", theme.get("fg", "#000000")).lstrip('#'), 16)
+            caption_value = ctypes.c_int(caption_color)
+            text_value = ctypes.c_int(text_color)
+            try:
+                dwmapi.DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR, ctypes.byref(caption_value), ctypes.sizeof(caption_value))
+            except Exception:
+                pass
+            try:
+                dwmapi.DwmSetWindowAttribute(hwnd, DWMWA_TEXT_COLOR, ctypes.byref(text_value), ctypes.sizeof(text_value))
+            except Exception:
+                pass
+        except Exception:
+            pass
+
     def ApplyTheme(self):
-        theme = self.themes.get(self.theme_key, self.themes["light"])
+        theme = self.ResolveTheme()
         self.style.configure("TLabel", background=theme["bg"], foreground=theme["fg"])
         self.style.configure("TButton", background=theme["btn_bg"], foreground=theme["btn_fg"], relief="flat", borderwidth=1)
         self.style.map(
@@ -894,8 +1250,20 @@ class MainUI():
         self.style.configure("TEntry", fieldbackground=theme["entry_bg"], foreground=theme["fg"], background=theme["entry_bg"])
         self.style.configure("TSpinbox", fieldbackground=theme["entry_bg"], foreground=theme["fg"], background=theme["entry_bg"])
         self.style.configure("TCombobox", fieldbackground=theme["entry_bg"], foreground=theme["fg"], background=theme["entry_bg"])
+        self.style.configure("Green.Horizontal.TProgressbar", troughcolor=theme["entry_bg"], background="#22c55e", bordercolor=theme["border"], lightcolor="#4ade80", darkcolor="#166534", thickness=16)
+        self.style.map("Green.Horizontal.TProgressbar", background=[("!disabled", "#22c55e")])
         self.style.configure("Treeview", background=theme["entry_bg"], fieldbackground=theme["entry_bg"], foreground=theme["fg"], bordercolor=theme["border"], rowheight=22)
+        # Custom Treeview style for clearer grid-like appearance
+        self.style.configure("Custom.Treeview", background=theme["entry_bg"], fieldbackground=theme["entry_bg"], foreground=theme["fg"], bordercolor=theme["border"], rowheight=22)
+        # ensure selected state colors are mapped for the custom style
+        try:
+            self.style.map("Custom.Treeview", background=[("selected", theme.get("active_bg", theme["entry_bg"]))], foreground=[("selected", theme.get("btn_fg", theme["fg"]))])
+        except Exception:
+            pass
+        self.style.configure("Treeview.Heading", background=theme.get("btn_bg", "#ffffff"), foreground=theme.get("btn_fg", theme["fg"]), relief="flat", font=(self.font, 10), borderwidth=1)
+        self.style.map("Treeview.Heading", background=[("active", theme.get("active_bg", theme["entry_bg"]))])
         self.root.config(bg=theme["bg"])
+        self.set_window_titlebar_color(theme)
         self.root.option_add("*Menu.background", theme["bg"])
         self.root.option_add("*Menu.foreground", theme["fg"])
         self.root.option_add("*Menu.activeBackground", theme["active_bg"])
@@ -944,7 +1312,11 @@ class MainUI():
                 elif isinstance(child, ttk.Spinbox):
                     child.configure(style="TSpinbox")
                 elif isinstance(child, ttk.Treeview):
-                    child.configure(style="Treeview")
+                    child.configure(style="Custom.Treeview")
+                    try:
+                        child.configure(background=theme["entry_bg"], fieldbackground=theme["entry_bg"], foreground=theme["fg"])
+                    except Exception:
+                        pass
                 if isinstance(child, tk.Toplevel):
                     child.config(bg=theme["bg"])
                 self.apply_theme_to_window(child)
@@ -1164,7 +1536,7 @@ class FileEditor:
     def ImportExcel(self):
         path = filedialog.askopenfilename(
             title=self.parent.tr("选择 Excel 文件"),
-            filetypes=[("Excel 文件", "*.xlsx *.xls"), ("所有文件", "*")]
+            filetypes=[("Excel 文件", "*.xlsx *.xls *.xlsm *.xltx *.xltm"), ("所有文件", "*")]
         )
         if not path:
             return
@@ -1210,7 +1582,7 @@ class FileEditor:
     def _show_excel_sheet_selector(self, workbook, sheet_name, path):
         sheet_values = self._extract_sheet_values(workbook, sheet_name, path)
         if not sheet_values:
-            raise ValueError("工作表中未找到任何数据。")
+            raise ValueError(self.parent.tr("工作表中未找到任何数据。"))
 
         max_rows = min(len(sheet_values), 100)
         max_cols = min(max((len(row) for row in sheet_values), default=0), 20)
@@ -1219,25 +1591,108 @@ class FileEditor:
         selector = tk.Toplevel(self.editor)
         selector.title(self.parent.tr("选择单元格 - {sheet}").format(sheet=sheet_name))
         selector.resizable(False, False)
-        selector.geometry("900x800")
+        selector.geometry("900x900")
         selector.transient(self.editor)
+        selector.iconbitmap("assets/icon.ico")
         selector.grab_set()
+        try:
+            selector.config(bg=self.parent.themes[self.parent.theme_key]["bg"])
+        except Exception:
+            pass
+        try:
+            self.parent.apply_theme_to_window(selector)
+        except Exception:
+            pass
 
-        tk.Label(selector, text=self.parent.tr("工作表：{sheet}，已显示前 {rows} 行、{cols} 列。双击单元格以选择，按住 Shift 双击两个角点可选中区域，或输入范围如 A1:D6 批量添加。")
-                 .format(sheet=sheet_name, rows=max_rows, cols=max_cols), font=(self.parent.font, 11)).pack(pady=8)
+        theme = self.parent.themes[self.parent.theme_key]
+        selector_style = ttk.Style(selector)
+        try:
+            selector_style.configure("Selector.TButton", background=theme["btn_bg"], foreground=theme["btn_fg"], relief="flat", borderwidth=1)
+            selector_style.map("Selector.TButton", background=[("active", theme["active_bg"])], foreground=[("active", theme["btn_fg"])])
+            selector_style.configure("Selector.TEntry", fieldbackground=theme["entry_bg"], background=theme["entry_bg"], foreground=theme["fg"], bordercolor=theme["border"])
+            selector_style.map("Selector.TEntry", fieldbackground=[("disabled", theme["entry_bg"])], foreground=[("disabled", theme["fg"])])
+            selector_style.configure("Selector.Treeview", background=theme["entry_bg"], fieldbackground=theme["entry_bg"], foreground=theme["fg"])
+        except Exception:
+            pass
 
-        table_frame = tk.Frame(selector)
+        tk.Label(selector, text=self.parent.tr("工作表：{sheet}，已显示前 {rows} 行、{cols} 列。")
+                 .format(sheet=sheet_name, rows=max_rows, cols=max_cols), font=(self.parent.font, 11), bg=theme["bg"], fg=theme["fg"]).pack(pady=8)
+
+        table_frame = tk.Frame(selector, bg=theme["bg"])
         table_frame.pack(fill="both", expand=True, padx=8)
 
         cols = [self._col_letter(i + 1) for i in range(max_cols)]
-        tree = ttk.Treeview(table_frame, columns=cols, show="headings", height=18)
+        tree = ttk.Treeview(table_frame, columns=cols, show="headings", height=18, style="Selector.Treeview")
         for col in cols:
             tree.heading(col, text=col)
             tree.column(col, width=110, anchor="w")
 
+        try:
+            theme = self.parent.themes[self.parent.theme_key]
+            entry_bg = theme.get("entry_bg", "#ffffff")
+            border = theme.get("border", "#f7f7f7")
+            def _shade_color(hex_color, factor):
+                try:
+                    c = hex_color.lstrip('#')
+                    r = int(c[0:2], 16)
+                    g = int(c[2:4], 16)
+                    b = int(c[4:6], 16)
+                    r = max(0, min(255, int(r * factor)))
+                    g = max(0, min(255, int(g * factor)))
+                    b = max(0, min(255, int(b * factor)))
+                    return f"#{r:02x}{g:02x}{b:02x}"
+                except Exception:
+                    return hex_color
+
+            c = entry_bg.lstrip('#')
+            try:
+                rr = int(c[0:2], 16); gg = int(c[2:4], 16); bb = int(c[4:6], 16)
+                lum = (rr * 299 + gg * 587 + bb * 114) / 1000
+            except Exception:
+                lum = 200
+            factor = 0.96 if lum > 128 else 1.04
+            odd_bg = entry_bg
+            even_bg = _shade_color(entry_bg, factor)
+            tree.tag_configure('odd', background=odd_bg, foreground=theme.get('fg', '#000000'))
+            tree.tag_configure('even', background=even_bg, foreground=theme.get('fg', '#000000'))
+            tree.tag_configure('selected', background=theme.get('active_bg', '#e5e7eb'), foreground=theme.get('btn_fg', theme.get('fg', '#000000')))
+            tree.configure(background=entry_bg, fieldbackground=entry_bg, foreground=theme.get('fg', '#000000'))
+        except Exception:
+            pass
+
         for row_index, row in enumerate(display_rows, start=1):
             values = [self._format_excel_value(row[col_index]) if col_index < len(row) else "" for col_index in range(max_cols)]
-            tree.insert("", "end", iid=str(row_index), values=values)
+            tag = 'even' if row_index % 2 == 0 else 'odd'
+            tree.insert("", "end", iid=str(row_index), values=values, tags=(tag,))
+
+        try:
+            font_obj = tkfont.Font(font=(self.parent.font, 10))
+            padding = 18
+            for ci, col in enumerate(cols):
+                max_w = font_obj.measure(col)
+                for row in display_rows:
+                    if ci < len(row):
+                        text = self._format_excel_value(row[ci])
+                        w = font_obj.measure(text)
+                        if w > max_w:
+                            max_w = w
+                tree.column(col, width=max_w + padding)
+        except Exception:
+            pass
+
+        def _apply_selection_tags(event=None):
+            try:
+                sel = set(tree.selection())
+                for iid in tree.get_children(''):
+                    tags = [t for t in tree.item(iid, 'tags') if t != 'selected']
+                    if iid in sel:
+                        tags.append('selected')
+                    tree.item(iid, tags=tuple(tags))
+            except Exception:
+                pass
+
+        tree.bind('<<TreeviewSelect>>', _apply_selection_tags)
+        _apply_selection_tags()
 
         vscroll = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
         hscroll = ttk.Scrollbar(table_frame, orient="horizontal", command=tree.xview)
@@ -1248,29 +1703,36 @@ class FileEditor:
         table_frame.grid_rowconfigure(0, weight=1)
         table_frame.grid_columnconfigure(0, weight=1)
 
-        range_frame = tk.Frame(selector)
+        range_frame = tk.Frame(selector, bg=theme["bg"])
         range_frame.pack(fill="x", padx=8, pady=4)
-        tk.Label(range_frame, text=self.parent.tr("范围地址："), font=(self.parent.font, 11)).grid(row=0, column=0, sticky="w")
-        start_entry = ttk.Entry(range_frame, width=12)
+        tk.Label(range_frame, text=self.parent.tr("范围地址："), font=(self.parent.font, 11), bg=theme["bg"], fg=theme["fg"]).grid(row=0, column=0, sticky="w")
+        start_entry = ttk.Entry(range_frame, width=12, style="Selector.TEntry")
         start_entry.grid(row=0, column=1, padx=4)
-        tk.Label(range_frame, text="-", font=(self.parent.font, 11)).grid(row=0, column=2)
-        end_entry = ttk.Entry(range_frame, width=12)
+        tk.Label(range_frame, text="-", font=(self.parent.font, 11), bg=theme["bg"], fg=theme["fg"]).grid(row=0, column=2)
+        end_entry = ttk.Entry(range_frame, width=12, style="Selector.TEntry")
         end_entry.grid(row=0, column=3, padx=4)
-        ttk.Button(range_frame, text=self.parent.tr("添加范围"), command=lambda: add_range_selection()).grid(row=0, column=4, padx=12)
-        tk.Label(range_frame, text=self.parent.tr("示例: A1 D5 或 A1:D5"), font=(self.parent.font, 9)).grid(row=1, column=0, columnspan=5, sticky="w", pady=4)
-        shift_status_label = tk.Label(range_frame, text=self.parent.tr("按住 Shift 双击两个角点选择区域。"), font=(self.parent.font, 9), fg="#333333")
+        ttk.Button(range_frame, text=self.parent.tr("添加范围"), command=lambda: add_range_selection(), style="Selector.TButton").grid(row=0, column=4, padx=12)
+        tk.Label(range_frame, text=self.parent.tr("示例: A1 D5 或 A1:D5"), font=(self.parent.font, 9), bg=theme["bg"], fg=theme["fg"]).grid(row=1, column=0, columnspan=5, sticky="w", pady=4)
+        shift_status_label = tk.Label(range_frame, text=self.parent.tr("按住 Shift 双击两个角点选择区域。"), font=(self.parent.font, 9), fg=theme["fg"], bg=theme["bg"])
         shift_status_label.grid(row=2, column=0, columnspan=5, sticky="w", pady=2)
 
-        selection_frame = tk.Frame(selector)
+        selection_frame = tk.Frame(selector, bg=theme["bg"])
         selection_frame.pack(fill="x", padx=8, pady=8)
 
-        tk.Label(selection_frame, text=self.parent.tr("已选单元格："), font=(self.parent.font, 11)).pack(anchor="w")
-        selected_listbox = tk.Listbox(selection_frame, height=5)
+        tk.Label(selection_frame, text=self.parent.tr("已选单元格："), font=(self.parent.font, 11), bg=theme["bg"], fg=theme["fg"]).pack(anchor="w")
+        selected_listbox = tk.Listbox(selection_frame, height=5, bg=theme["entry_bg"], fg=theme["fg"], highlightbackground=theme["border"], selectbackground=theme["active_bg"], selectforeground=theme["btn_fg"])
         selected_listbox.pack(fill="x", padx=4, pady=4)
 
         selected_values = []
         selected_set = set()
         shift_anchor = None
+
+        try:
+            start_entry.config(background=theme["entry_bg"], foreground=theme["fg"], insertbackground=theme["fg"])
+            end_entry.config(background=theme["entry_bg"], foreground=theme["fg"], insertbackground=theme["fg"])
+            selected_listbox.config(bg=theme["entry_bg"], fg=theme["fg"], highlightbackground=theme["border"], selectbackground=theme["active_bg"], selectforeground=theme["btn_fg"])
+        except Exception:
+            pass
 
         def add_cell_selection(event=None):
             nonlocal shift_anchor
@@ -1392,9 +1854,9 @@ class FileEditor:
 
         tree.bind("<Double-1>", add_cell_selection)
 
-        buttons_frame = tk.Frame(selector)
+        buttons_frame = tk.Frame(selector, bg=theme["bg"])
         buttons_frame.pack(pady=6)
-        ttk.Button(buttons_frame, text=self.parent.tr("移除选中"), command=remove_selection).pack(side="left", padx=6)
+        ttk.Button(buttons_frame, text=self.parent.tr("移除选中"), command=remove_selection, style="Selector.TButton").pack(side="left", padx=6)
 
         result = {"values": None}
 
@@ -1405,15 +1867,15 @@ class FileEditor:
         def cancel():
             selector.destroy()
 
-        ttk.Button(buttons_frame, text=self.parent.tr("导入所选单元格"), command=confirm).pack(side="left", padx=6)
-        ttk.Button(buttons_frame, text=self.parent.tr("取消"), command=cancel).pack(side="left", padx=6)
+        ttk.Button(buttons_frame, text=self.parent.tr("导入所选单元格"), command=confirm, style="Selector.TButton").pack(side="left", padx=6)
+        ttk.Button(buttons_frame, text=self.parent.tr("取消"), command=cancel, style="Selector.TButton").pack(side="left", padx=6)
 
         self.editor.wait_window(selector)
         return result["values"]
 
     def _extract_sheet_values(self, workbook, sheet_name, path):
         values = []
-        if path.lower().endswith(".xlsx"):
+        if path.lower().endswith(".xlsx") or path.lower().endswith(".xlsm") or path.lower().endswith(".xltx") or path.lower().endswith(".xltm"):
             worksheet = workbook[sheet_name]
             for row in worksheet.iter_rows(values_only=True):
                 values.append(list(row))
@@ -1439,11 +1901,11 @@ class FileEditor:
 
     def _open_excel_workbook(self, path):
         ext = os.path.splitext(path)[1].lower()
-        if ext == ".xlsx":
+        if ext == ".xlsx" or ext == ".xlsm" or ext == ".xltx" or ext == ".xltm":
             return load_workbook(path, read_only=True, data_only=True)
         if ext == ".xls":
             return xlrd.open_workbook(path, on_demand=True)
-        raise ValueError("仅支持 XLS/XLSX 格式的 Excel 文件。")
+        raise ValueError(self.parent.tr("仅支持 XLS/XLSX/XLSM/XLTX/XLTM 格式的 Excel 文件。"))
 
     def _choose_excel_sheet(self, sheet_names):
         if not sheet_names:
@@ -1454,14 +1916,32 @@ class FileEditor:
         picker = tk.Toplevel(self.editor)
         picker.title(self.parent.tr("选择工作表"))
         picker.resizable(False, False)
-        picker.geometry("320x260")
+        picker.geometry("350x300")
         picker.transient(self.editor)
+        picker.iconbitmap("assets/icon.ico")
         picker.grab_set()
+        
+        theme = self.parent.themes[self.parent.theme_key]
+        try:
+            picker.config(bg=theme["bg"])
+        except Exception as e:
+            CONSOLE.print(f"[!] Failed to set picker background: {e}", style="#bb0000")
+        try:
+            self.parent.apply_theme_to_window(picker)
+        except Exception as e:
+            CONSOLE.print(f"[!] Failed to apply theme to picker: {e}", style="#bb0000")
 
-        label = tk.Label(picker, text=self.parent.tr("请选择要导入的工作表："), font=(self.parent.font, 11))
+        picker_style = ttk.Style(picker)
+        try:
+            picker_style.configure("Picker.TButton", background=theme["btn_bg"], foreground=theme["btn_fg"], relief="flat", borderwidth=1)
+            picker_style.map("Picker.TButton", background=[("active", theme["active_bg"])], foreground=[("active", theme["btn_fg"])])
+        except Exception:
+            pass
+
+        label = tk.Label(picker, text=self.parent.tr("请选择要导入的工作表："), font=(self.parent.font, 11), bg=theme["bg"], fg=theme["fg"])
         label.pack(pady=12)
 
-        listbox = tk.Listbox(picker, height=8, width=38)
+        listbox = tk.Listbox(picker, height=8, width=38, bg=theme["entry_bg"], fg=theme["fg"], highlightbackground=theme["border"], selectbackground=theme["active_bg"], selectforeground=theme["btn_fg"])
         listbox.pack(padx=12)
         for name in sheet_names:
             listbox.insert(tk.END, name)
@@ -1479,10 +1959,10 @@ class FileEditor:
         def cancel():
             picker.destroy()
 
-        button_frame = tk.Frame(picker)
+        button_frame = tk.Frame(picker, bg=theme["bg"])
         button_frame.pack(pady=12)
-        ttk.Button(button_frame, text=self.parent.tr("确定"), command=choose).pack(side="left", padx=8)
-        ttk.Button(button_frame, text=self.parent.tr("取消"), command=cancel).pack(side="left", padx=8)
+        ttk.Button(button_frame, text=self.parent.tr("确定"), command=choose, style="Picker.TButton").pack(side="left", padx=8)
+        ttk.Button(button_frame, text=self.parent.tr("取消"), command=cancel, style="Picker.TButton").pack(side="left", padx=8)
         listbox.bind("<Double-Button-1>", lambda event: choose())
 
         self.editor.wait_window(picker)
@@ -1490,7 +1970,7 @@ class FileEditor:
 
     def _read_excel_sheet(self, workbook, sheet_name, path):
         names = []
-        if path.lower().endswith(".xlsx"):
+        if path.lower().endswith(".xlsx") or path.lower().endswith(".xlsm") or path.lower().endswith(".xltx") or path.lower().endswith(".xltm"):
             worksheet = workbook[sheet_name]
             for row in worksheet.iter_rows(values_only=True):
                 value = self._first_nonempty_cell(row)
