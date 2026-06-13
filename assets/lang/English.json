@@ -122,7 +122,9 @@
   "保存名单失败": "Failed to save the list",
   "加载设置失败": "Failed to load settings",
   "保存设置失败": "Failed to save settings",
-  "系统主题:":"System theme: ",
+  "系统主题:": "System theme: ",
+  "跟随系统主题": "Follow system theme",
+  "删除失败：文件正在使用中，请先切换到其他字体或重启程序后重试。": "Delete failed: the file is in use. Please switch to another font or restart the program and retry.",
   "未能获取最新版本信息。请检查仓库名称是否正确或网络连接。": "Failed to get the latest version information. Please check if the repository name is correct or if there is a network connection.",
   "取消下载": "Cancel Download",
   "是否取消当前下载？": "Cancel the current download?"

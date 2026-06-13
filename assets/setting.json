@@ -1,10 +1,10 @@
 {
   "ScreenPos": {
-    "x": 98,
-    "y": 6
+    "x": 315,
+    "y": 267
   },
   "LoadFile": "assets/choicefile\\1-48座位号.json",
-  "Theme": "modern_dark",
+  "Theme": "follow_system",
   "Language": "中文简体.json",
   "Font": "assets/font\\SIMYOU.TTF"
 }

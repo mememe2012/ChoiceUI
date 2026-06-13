@@ -239,11 +239,12 @@ class MainUI():
         self.font_file = os.path.join(self.font_folder, "MicrosoftYaHei.ttc")
         self.font = fontloader(self.font_file)
         self.url = "https://github.com/mememe2012/ChoiceUI"
-        self.version = "1.3.1.1"
+        self.version = "1.3.2.0"
 
         self.language_file = "English.json"
         self.language_data = {}
         self.theme_key = "light"
+        self.follow_system = False
         self.themes = json.loads(open("assets/theme/theme.json", "r", encoding="utf-8").read())
 #---------------------Init UI--------------------------#
         self.root = tk.Tk()
@@ -269,11 +270,9 @@ class MainUI():
         if os.path.exists("setuptmp"):
             CONSOLE.print("Cleaning up temporary files...", style="#00bb00")
             shutil.rmtree("setuptmp", ignore_errors=True)
-        try:os.mkdir("setuptmp")
-        except Exception:pass
-        if os.path.exists("setting.json"):
-            shutil.copy("setting.json", "setuptmp/setting.json")
-            os.remove("setting.json")
+        if os.path.exists("tmp/setting.json"):
+            shutil.copy("tmp/setting.json", "setuptmp/setting.json")
+            shutil.rmtree("tmp", ignore_errors=True)
 #------------------Check UPDATE-----------------------#
         gcu = threading.Thread(target=lambda: self.checkupdate(self.version))
         gcu.daemon = True
@@ -295,20 +294,21 @@ class MainUI():
                 self.progresswindow.destroy()
 
     def downloadFile(self, url, save_path):
+        theme = self.ResolveTheme()
         self.progresswindow = tk.Toplevel(self.root)
         self.progresswindow.title(self.tr("下载"))
         self.progresswindow.resizable(False, False)
         self.progresswindow.geometry("400x100")
         self.progresswindow.iconbitmap("assets/icon.ico")
-        self.progresswindow.config(bg=self.themes[self.theme_key]["bg"])
+        self.progresswindow.config(bg=theme["bg"])
 
         self.progressbar = ttk.Progressbar(self.progresswindow, style="Green.Horizontal.TProgressbar", mode="determinate", maximum=100, value=0)
         self.progressbar.place(x=20, y=20, width=360, height=30)
 
-        self.progressLabel = tk.Label(self.progresswindow, text=self.tr("Requesting..."), font=(self.font, 10), bg=self.themes[self.theme_key]["bg"], fg=self.themes[self.theme_key]["fg"])
+        self.progressLabel = tk.Label(self.progresswindow, text=self.tr("Requesting..."), font=(self.font, 10), bg=theme["bg"], fg=theme["fg"])
         self.progressLabel.place(x=20, y=60)
 
-        self.speedLabel = tk.Label(self.progresswindow, text="0.00 MiB/s", font=(self.font, 10), bg=self.themes[self.theme_key]["bg"], fg=self.themes[self.theme_key]["fg"])
+        self.speedLabel = tk.Label(self.progresswindow, text="0.00 MiB/s", font=(self.font, 10), bg=theme["bg"], fg=theme["fg"])
         self.speedLabel.place(x=20, y=80)
 
         self.progresswindow.grab_set()
@@ -453,7 +453,7 @@ class MainUI():
                 self.progressbar.destroy()
                 self.speedLabel.destroy()
 
-                self.textlabel = tk.Label(self.progresswindow, text="Loading...", font=(self.font, 10), bg=self.themes[self.theme_key]["bg"], fg=self.themes[self.theme_key]["fg"])
+                self.textlabel = tk.Label(self.progresswindow, text="Loading...", font=(self.font, 10), bg=self.ResolveTheme()["bg"], fg=self.ResolveTheme()["fg"])
                 self.textlabel.place(x=20, y=60)
 
             if self.download_cancelled:
@@ -485,7 +485,9 @@ class MainUI():
     def loadupdatefile(self):
         try:
             if os.path.exists("assets/setting.json"):
-                shutil.copy("assets/setting.json", "setting.json")
+                try:os.mkdir("tmp")
+                except Exception:pass
+                shutil.copy("assets/setting.json", "tmp/setting.json")
             CONSOLE.print("已准备好安装程序。正在启动...", style="#00bb00")
         except Exception as e:
             CONSOLE.print(f"Failed to copy setting.json: {e}", style="#bb0000")
@@ -579,12 +581,13 @@ class MainUI():
         self.UpdateCountLimit()
 
     def theme(self):
+        theme = self.ResolveTheme()
         self.themeroot = tk.Toplevel(self.root)
         self.themeroot.title(self.tr("主题"))
         self.themeroot.resizable(False, False)
         self.themeroot.geometry("300x300")
         self.themeroot.iconbitmap("assets/icon.ico")
-        self.themeroot.config(bg=self.themes[self.theme_key]["bg"])
+        self.themeroot.config(bg=theme["bg"])
 
         theme_listbox = tk.Listbox(self.themeroot, width=24, height=6, activestyle="dotbox")
         theme_listbox.place(x=20, y=20)
@@ -593,15 +596,56 @@ class MainUI():
             if key == self.theme_key:
                 theme_listbox.selection_set(index)
 
-        def apply_selected_theme():
-            selection = theme_listbox.curselection()
-            if not selection:
-                return
-            index = selection[0]
-            key = list(self.themes.keys())[index]
-            self.theme_key = key
+        follow_system_var = tk.BooleanVar(value=self.follow_system)
+
+        def on_follow_system_changed():
+            enabled = not follow_system_var.get()
+            theme_listbox.config(state="normal" if enabled else "disabled")
+            if follow_system_var.get():
+                self.theme_key = "follow_system"
+            else:
+                current = theme_listbox.curselection()
+                if current:
+                    self.theme_key = list(self.themes.keys())[current[0]]
+                else:
+                    self.theme_key = self.theme_key if self.theme_key != "follow_system" else "light"
+            system_label.config(text=self.tr("系统主题:") + get_system_theme())
             self.ApplyTheme()
-            self.SaveSetting("Theme", key)
+            self.apply_theme_to_window(self.themeroot)
+
+        follow_system_check = tk.Checkbutton(
+            self.themeroot,
+            text=self.tr("跟随系统主题"),
+            variable=follow_system_var,
+            onvalue=True,
+            offvalue=False,
+            command=on_follow_system_changed,
+            bg=theme["bg"],
+            fg=theme["fg"],
+            selectcolor=theme["bg"],
+            activebackground=theme["active_bg"],
+            activeforeground=theme["btn_fg"]
+        )
+        follow_system_check.place(x=20, y=220)
+        if self.follow_system:
+            theme_listbox.config(state="disabled")
+
+        def apply_selected_theme():
+            if follow_system_var.get():
+                save_key = "follow_system"
+                self.follow_system = True
+                self.theme_key = "follow_system"
+            else:
+                self.follow_system = False
+                selection = theme_listbox.curselection()
+                if not selection:
+                    return
+                index = selection[0]
+                save_key = list(self.themes.keys())[index]
+                self.theme_key = save_key
+            CONSOLE.print(f"Applying theme: {save_key}", style="#00bb00")
+            self.ApplyTheme()
+            self.SaveSetting("Theme", save_key)
             messagebox.showinfo(self.tr("主题"), self.tr("主题已应用。"))
             self.themeroot.destroy()
 
@@ -609,16 +653,18 @@ class MainUI():
         apply_button.place(x=20, y=170, width=100)
         close_button = ttk.Button(self.themeroot, text=self.tr("取消"), command=self.themeroot.destroy)
         close_button.place(x=140, y=170, width=100)
-        tk.Label(self.themeroot, text=self.tr("系统主题:") + get_system_theme(), font=(self.font, 10), bg=self.themes[self.theme_key]["bg"], fg=self.themes[self.theme_key]["fg"]).place(x=20, y=260)
+        system_label = tk.Label(self.themeroot, text=self.tr("系统主题:") + get_system_theme(), font=(self.font, 10), bg=theme["bg"], fg=theme["fg"])
+        system_label.place(x=20, y=260)
         self.apply_theme_to_window(self.themeroot)
 
     def lang(self):
+        theme = self.ResolveTheme()
         self.langroot = tk.Toplevel(self.root)
         self.langroot.title(self.tr("语言"))
         self.langroot.resizable(False, False)
         self.langroot.geometry("400x300")
         self.langroot.iconbitmap("assets/icon.ico")
-        self.langroot.config(bg=self.themes[self.theme_key]["bg"])
+        self.langroot.config(bg=theme["bg"])
 
         language_listbox = tk.Listbox(self.langroot, width=32, height=8, activestyle="dotbox")
         language_listbox.place(x=20, y=20)
@@ -644,24 +690,27 @@ class MainUI():
         self.apply_theme_to_window(self.langroot)
 
     def font_setting(self):
+        theme = self.ResolveTheme()
         self.fontroot = tk.Toplevel(self.root)
         self.fontroot.title(self.tr("字体"))
         self.fontroot.resizable(False, False)
         self.fontroot.geometry("650x360")
         self.fontroot.iconbitmap("assets/icon.ico")
-        self.fontroot.config(bg=self.themes[self.theme_key]["bg"])
+        self.fontroot.config(bg=theme["bg"])
 
-        self.fontLabel = tk.Label(self.fontroot, text=self.tr("当前字体：") + self.GetFontDisplayName(), font=(self.font, 10))
+        ui_font = ("Microsoft YaHei", 10)
+        self.fontLabel = tk.Label(self.fontroot, text=self.tr("当前字体：") + self.GetFontDisplayName(), font=ui_font)
         self.fontLabel.place(x=20, y=20)
 
         self.fontListbox = tk.Listbox(self.fontroot, height=10, width=40)
         self.fontListbox.place(x=20, y=60)
         self.fontListbox.bind("<<ListboxSelect>>", self.OnFontSelectChange)
 
-        self.previewTitle = tk.Label(self.fontroot, text=self.tr("字体预览"), font=(self.font, 10))
+        self.previewTitle = tk.Label(self.fontroot, text=self.tr("字体预览"), font=ui_font)
         self.previewTitle.place(x=360, y=20)
 
-        self.previewLabel = tk.Label(self.fontroot, text=self.tr("文本\nAaBbCc\n123"), font=(self.font, 20), bg=self.themes[self.theme_key]["entry_bg"], fg=self.themes[self.theme_key]["fg"], width=20, height=6, anchor="center", justify="center", wraplength=140)
+        self.previewFont = tkfont.Font(family=self.font, size=20)
+        self.previewLabel = tk.Label(self.fontroot, text=self.tr("文本\nAaBbCc\n123"), font=self.previewFont, bg=theme["entry_bg"], fg=theme["fg"], width=20, height=6, anchor="center", justify="center", wraplength=140)
         self.previewLabel.place(x=400, y=60, width=160, height=160)
 
         self.importFontButton = ttk.Button(self.fontroot, text=self.tr("导入字体"), command=self.ImportFontFile)
@@ -706,8 +755,11 @@ class MainUI():
         font_path = os.path.join(self.font_folder, filename)
         self.font_file = font_path
         self.font = self.LoadFont(font_path)
-        self.fontLabel.config(text=self.tr("当前字体：") + self.GetFontDisplayName(), font=(self.font, 10))
+        self.fontLabel.config(text=self.tr("当前字体：") + self.GetFontDisplayName(), font=("Microsoft YaHei", 10))
+        self.previewTitle.config(font=("Microsoft YaHei", 10))
         self.ApplyFont()
+        self.fontLabel.config(font=("Microsoft YaHei", 10))
+        self.previewTitle.config(font=("Microsoft YaHei", 10))
         self.UpdateFontPreview(font_path)
         self.SaveSetting("Font", self.font_file)
         messagebox.showinfo(self.tr("字体"), self.tr("字体已切换。"))
@@ -749,15 +801,22 @@ class MainUI():
                     self.UnregisterFontFile(self.font_file)
                     self.font_file = None
                     self.font = self.LoadFont(None)
+                    self.ApplyFont()
                     self.SaveSetting("Font", self.font_file)
                 else:
-                    self.UnregisterFontFile(font_path)
+                    try:
+                        self.UnregisterFontFile(font_path)
+                    except Exception:
+                        pass
                 os.remove(font_path)
                 self.RefreshFontList()
-                self.fontLabel.config(text=self.tr("当前字体：") + self.GetFontDisplayName(), font=(self.font, 10))
-                self.ApplyFont()
+                self.fontLabel.config(text=self.tr("当前字体：") + self.GetFontDisplayName(), font=("Microsoft YaHei", 10))
+                self.previewTitle.config(font=("Microsoft YaHei", 10))
                 self.UpdateFontPreview(self.font_file)
                 messagebox.showinfo(self.tr("删除成功"), self.tr("已删除：{filename}").format(filename=filename))
+            except PermissionError:
+                CONSOLE.print(f"[!] Permission denied deleting font: {font_path}", style="#bb0000")
+                messagebox.showerror(self.tr("错误"), self.tr("删除失败：文件正在使用中，请先切换到其他字体重启程序后重试。"))
             except Exception as e:
                 CONSOLE.print(f"[!] Failed to delete font: {e}", style="#bb0000")
                 messagebox.showerror(self.tr("错误"), f"{self.tr('删除字体失败')}: {e}")
@@ -800,7 +859,7 @@ class MainUI():
                 self.setroot.resizable(False, False)
                 self.setroot.iconbitmap("assets/icon.ico")
                 self.setroot.geometry("520x360")
-                self.setroot.config(bg=parent.themes[parent.theme_key]["bg"])
+                self.setroot.config(bg=parent.ResolveTheme()["bg"])
                 self.Setcontrols()
                 self.RefreshList()
                 parent.apply_theme_to_window(self.setroot)
@@ -992,7 +1051,7 @@ class MainUI():
         self.roll_target_count = count
         self.rolling = True
         self.startButton.state(["disabled"])
-        self.showLabel.config(text=self.tr("正在抽奖..."), fg=self.themes[self.theme_key]["accent"])
+        self.showLabel.config(text=self.tr("正在抽奖..."), fg=self.ResolveTheme()["accent"])
         self.roll_start_time = time.time()
         self._roll_animation()
 
@@ -1000,7 +1059,7 @@ class MainUI():
         if not self.rolling:
             return
         elapsed = time.time() - self.roll_start_time
-        self.showLabel.config(text=random.choice(self.choiseList), fg=self.themes[self.theme_key]["fg"])
+        self.showLabel.config(text=random.choice(self.choiseList), fg=self.ResolveTheme()["fg"])
         if elapsed < 3:
             self.roll_job = self.root.after(80, self._roll_animation)
             return
@@ -1008,7 +1067,7 @@ class MainUI():
         self.startButton.state(["!disabled"])
         winners = random.sample(self.choiseList, self.roll_target_count)
         result_text = " ".join(winners)
-        self.showLabel.config(text=self.tr("中奖：{result}").format(result=result_text), fg=self.themes[self.theme_key]["accent"])
+        self.showLabel.config(text=self.tr("中奖：{result}").format(result=result_text), fg=self.ResolveTheme()["accent"])
 
     def threadPrograss(self, *funcs):
         def run():
@@ -1045,7 +1104,12 @@ class MainUI():
             if not isinstance(self.latestPos, dict):
                 self.latestPos = {"x": 0, "y": 0}
             self.root.geometry(f"800x300+{self.latestPos['x']}+{self.latestPos['y']}")
-            self.theme_key = setting.get("Theme", self.theme_key)
+            if setting.get("Theme") == "follow_system":
+                self.follow_system = True
+                self.theme_key = "follow_system"
+            else:
+                self.follow_system = False
+                self.theme_key = setting.get("Theme", self.theme_key)
             self.language_file = setting.get("Language", self.language_file)
             self.language_data = self.LoadLanguage(self.language_file)
             self.pending_load_file = setting.get("LoadFile")
@@ -1137,12 +1201,6 @@ class MainUI():
             self.countInfoLabel.config(font=(self.font, 10))
         if hasattr(self, 'loadedFileLabel'):
             self.loadedFileLabel.config(font=(self.font, 10))
-        if hasattr(self, 'fontLabel'):
-            self.fontLabel.config(font=(self.font, 10))
-        if hasattr(self, 'previewTitle'):
-            self.previewTitle.config(font=(self.font, 10))
-        if hasattr(self, 'previewLabel'):
-            self.previewLabel.config(font=(self.font, 20))
 
     def GetFontDisplayName(self):
         if self.font_file:
@@ -1174,8 +1232,9 @@ class MainUI():
         CONSOLE.print(f"[*] Loading font for preview: {font_path}", style="#00bb00")
         preview_family = self.LoadFont(font_path)
         CONSOLE.print(f"[*] Preview font family: {preview_family}", style="#00bb00")
-        if hasattr(self, 'previewLabel'):
-            self.previewLabel.config(text=self.tr("文本\nAaBbCc\n123"), font=(preview_family, 20))
+        if hasattr(self, 'previewFont'):
+            self.previewFont.config(family=preview_family)
+            self.previewLabel.config(text=self.tr("文本\nAaBbCc\n123"))
             CONSOLE.print(f"[*] Updated font preview: {preview_family}", style="#00bb00")
 
     def OnFontSelectChange(self, event=None):
@@ -1190,7 +1249,7 @@ class MainUI():
 
     def ResolveTheme(self, theme_key=None):
         theme_key = theme_key or self.theme_key
-        if theme_key == "system":
+        if theme_key in ("system", "follow_system"):
             system_theme = get_system_theme()
             if system_theme == "Dark":
                 return self.themes.get("dark", self.themes["light"])
@@ -1253,9 +1312,8 @@ class MainUI():
         self.style.configure("Green.Horizontal.TProgressbar", troughcolor=theme["entry_bg"], background="#22c55e", bordercolor=theme["border"], lightcolor="#4ade80", darkcolor="#166534", thickness=16)
         self.style.map("Green.Horizontal.TProgressbar", background=[("!disabled", "#22c55e")])
         self.style.configure("Treeview", background=theme["entry_bg"], fieldbackground=theme["entry_bg"], foreground=theme["fg"], bordercolor=theme["border"], rowheight=22)
-        # Custom Treeview style for clearer grid-like appearance
         self.style.configure("Custom.Treeview", background=theme["entry_bg"], fieldbackground=theme["entry_bg"], foreground=theme["fg"], bordercolor=theme["border"], rowheight=22)
-        # ensure selected state colors are mapped for the custom style
+
         try:
             self.style.map("Custom.Treeview", background=[("selected", theme.get("active_bg", theme["entry_bg"]))], foreground=[("selected", theme.get("btn_fg", theme["fg"]))])
         except Exception:
@@ -1288,7 +1346,7 @@ class MainUI():
         self.apply_theme_to_window(self.root)
 
     def apply_theme_to_window(self, window):
-        theme = self.themes.get(self.theme_key, self.themes["light"])
+        theme = self.ResolveTheme()
         for child in window.winfo_children():
             try:
                 if isinstance(child, tk.Label):
@@ -1476,12 +1534,13 @@ class FileEditor:
         self.file_path = os.path.abspath(file_path)
         self.names = self.parent.LoadNamesFromJson(self.file_path)
 
+        theme = self.parent.ResolveTheme()
         self.editor = tk.Toplevel(parent.root)
         self.editor.title(self.parent.tr("编辑名单 - {name}").format(name=os.path.basename(file_path)))
         self.editor.resizable(False, False)
         self.editor.iconbitmap("assets/icon.ico")
         self.editor.geometry("600x450")
-        self.editor.config(bg=self.parent.themes[self.parent.theme_key]["bg"])
+        self.editor.config(bg=theme["bg"])
         self.SetControls()
         self.RefreshNames()
         self.parent.apply_theme_to_window(self.editor)
@@ -1595,8 +1654,9 @@ class FileEditor:
         selector.transient(self.editor)
         selector.iconbitmap("assets/icon.ico")
         selector.grab_set()
+        theme = self.parent.ResolveTheme()
         try:
-            selector.config(bg=self.parent.themes[self.parent.theme_key]["bg"])
+            selector.config(bg=theme["bg"])
         except Exception:
             pass
         try:
@@ -1604,7 +1664,6 @@ class FileEditor:
         except Exception:
             pass
 
-        theme = self.parent.themes[self.parent.theme_key]
         selector_style = ttk.Style(selector)
         try:
             selector_style.configure("Selector.TButton", background=theme["btn_bg"], foreground=theme["btn_fg"], relief="flat", borderwidth=1)
@@ -1921,7 +1980,7 @@ class FileEditor:
         picker.iconbitmap("assets/icon.ico")
         picker.grab_set()
         
-        theme = self.parent.themes[self.parent.theme_key]
+        theme = self.parent.ResolveTheme()
         try:
             picker.config(bg=theme["bg"])
         except Exception as e:

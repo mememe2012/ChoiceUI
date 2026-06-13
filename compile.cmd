@@ -12,8 +12,8 @@ python -m nuitka ^
     --windows-company-name=mememe2012 ^
     --windows-uac-admin ^
     --windows-product-name=Choice_UI ^
-    --windows-file-version=1.3.1.0 ^
-    --windows-product-version=1.3.1.0 ^
+    --windows-file-version=1.3.2.0 ^
+    --windows-product-version=1.3.2.0 ^
     --plugin-enable=tk-inter ^
     --jobs=8 ^
     --zig

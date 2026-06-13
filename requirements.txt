@@ -2,3 +2,4 @@ rich
 openpyxl
 xlrd
 pyglet
+requests
