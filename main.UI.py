@@ -271,7 +271,7 @@ class MainUI():
             CONSOLE.print("Cleaning up temporary files...", style="#00bb00")
             shutil.rmtree("setuptmp", ignore_errors=True)
         if os.path.exists("tmp/setting.json"):
-            shutil.copy("tmp/setting.json", "setuptmp/setting.json")
+            shutil.copy("tmp/setting.json", "assets/setting.json")
             shutil.rmtree("tmp", ignore_errors=True)
 #------------------Check UPDATE-----------------------#
         gcu = threading.Thread(target=lambda: self.checkupdate(self.version))
@@ -2096,4 +2096,8 @@ class FileEditor:
             messagebox.showerror(self.parent.tr("错误"), f"{self.parent.tr('保存名单失败')}: {e}")
 
 if __name__ == "__main__":
-    app = MainUI()
+    try:
+        app = MainUI()
+    except Exception as e:
+        CONSOLE.print(f"[!] Failed to start application: {e}", style="#bb0000")
+        messagebox.showerror("Error", f"Failed to start application: {e}")
